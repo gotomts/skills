@@ -4,7 +4,7 @@
 日々の開発で繰り返し踏む手順を、Claude 側に手順として持たせるために書いている。
 自分用なので、配布やインストールを想定した作りにはしていない。
 
-配布を前提にしたスキル + エージェント集は、plugin marketplace として [gotomts/claude-collections](https://github.com/gotomts/claude-collections) に置いている。
+skill と agent をまとめたコレクションは [gotomts/claude-collections](https://github.com/gotomts/claude-collections) にある。
 
 ## 一覧
 
