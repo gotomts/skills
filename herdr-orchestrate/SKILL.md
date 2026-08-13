@@ -33,11 +33,15 @@ herdr は 1 画面に複数リポジトリを同居させ、`herdr agent list` �
 ### 対象 workspace の求め方
 
 ```sh
-repo_root=$(git rev-parse --show-toplevel)
-herdr worktree list --cwd "$repo_root" --json
+main_repo=$(dirname "$(git rev-parse --git-common-dir)")
+herdr worktree list --cwd "$main_repo"
 ```
 
 `--cwd` を渡すと、そのリポジトリの worktree だけが返る (渡さないと**フォーカス中の workspace のリポジトリ**が対象になり、親がどの pane に居るかで結果が変わる。必ず明示する)。
+
+**`--cwd` に渡す値は `git rev-parse --show-toplevel` では求めない。** 親自身がリンク worktree で動いていると、`--show-toplevel` は main working dir ではなく worktree 自身のパスを返す。それを渡した `herdr worktree create` は必ず `linked_worktree_source` エラーで落ちる ("New and open worktree actions start from the repo parent workspace.")。`worktree list` の方はどちらのパスでも通ってしまうため、list で動いた式をそのまま create に流用して踏んだ。**`--cwd` を取る herdr のコマンドは、このスキル内では全部 `$main_repo` を使う。**
+
+親がリンク worktree で動くのは例外ではない。worktree を切って作業しているセッションからさらに子を起こすのが、このスキルの主な使われ方。
 
 返る各 worktree の `open_workspace_id` が対象の workspace ID。このフィールドが無いものは herdr で開いていない worktree (`wt` などで作ったもの) なので、対象外として扱う。
 
@@ -47,7 +51,7 @@ herdr worktree list --cwd "$repo_root" --json
 
 - **巡回モード** — `herdr agent list` の結果を `workspace_id` が上の集合に入るものだけに絞る。範囲外の agent は状態も報告しない (「別リポで 3 つ動いています」も余計な情報)
 - **停止モード** — 対象が範囲外なら実行せず、「別リポジトリ (`<repo_name>`) の workspace なので、そちらのセッションから操作してください」と伝えて止まる
-- **起動モード** — `herdr worktree create --cwd "$(git rev-parse --show-toplevel)"` が自リポに閉じるので追加の絞りは不要
+- **起動モード** — `herdr worktree create --cwd "$main_repo"` が自リポに閉じるので追加の絞りは不要
 
 ユーザーが明示的に別リポの workspace ID を指定してきた場合だけは例外だが、そのときも「別リポですが本当に操作しますか」と 1 問確認する。issue ID の取り違えで隣のプロジェクトを消すのが一番ありがちな事故。
 
@@ -147,13 +151,29 @@ agent 名の制約は実際にエラーで弾かれる (`invalid_agent_name`)。
 
 ### Step 3: base とモデルを決める
 
-**base** — 既定は `origin/main`。ローカル `main` は fetch 遅れで古いことがあるため使わない。
+**base** — 既定は default branch のリモート追跡参照。ローカル `main` は fetch 遅れで古いことがあるため使わない。
 
-default branch が `main` でないリポジトリを踏む可能性があるので検出する:
+**ただし `origin/main` を指定するだけでは最新にならない。** リモート追跡参照は最後に fetch した時点で止まっている。親は issue を仕込み続けて長時間生きるので、親の起動が古いほど子は古い土台から作業を始める。**base を決める前に必ず fetch する。**
+
+default branch が `main` でないリポジトリを踏む可能性があるので、あわせて検出する:
 
 ```sh
-git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/origin/||'
+git fetch origin
+git remote set-head origin --auto
+default_branch=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/origin/||')
+base="origin/$default_branch"
+base_sha=$(git rev-parse --verify "${base}^{commit}")   # Step 4 で見せ、Step 5-1 でそのまま渡す
 ```
+
+`set-head --auto` を省くと default branch の変更に追従しない。**`git fetch` は `refs/remotes/origin/HEAD` を更新しない** — リモート側で default branch が `main` から `develop` に変わっても、fetch 後の `origin/HEAD` は `main` を指したままになる。
+
+fetch は `--cwd` と違って**実行場所を選ばない**。`refs/remotes` は `.git` を共有するので、親がリンク worktree に居ても main working dir 側と同じ値になる。
+
+**fetch か `set-head` に失敗したら止める。** ネットワーク断や認証切れを握り潰して古い base で子を立てると、子は最初から古い土台で作業し、後で作り直すことになる。「`<失敗したコマンド>` に失敗しました。手元の `<base>` (`<SHA>`) で立てますか」と 1 問確認する。
+
+**`default_branch` が空なら `main` で代用せず止めて base を聞く。** default branch が `master` や `develop` のリポジトリで `main` を仮定すると、間違った土台で子が立つか、`main` が無くて `worktree create` が `invalid reference` で落ちる。どちらも黙って進んでよい状態ではない。
+
+保証できるのは **fetch した時点まで**。承認待ちの間に default branch が進むことはあるが、そこで取り直さず承認時の `base_sha` で作る — 人間が見たものと違う土台で子が立つ方が害が大きい。だから Step 5-1 に渡すのはブランチ名ではなく `base_sha` (不変) にする。親は issue を続けて仕込むので、承認待ちの間に別の issue のための fetch が走って `origin/<default>` が進むのは普通に起きる。子が走り出した後に進むのも同じで、それは子自身が扱う。
 
 **モデル** — `herdr agent start` は素の `claude` を起動するので、何も渡さないとアカウント既定のモデルになる。親がシェルのモデル選択で選んだモデルは子に伝播しない。issue ごとに明示する。
 
@@ -175,7 +195,7 @@ worktree 作成・タブ生成・子セッション起動・プロンプト投�
 ```
 issue:   ABC-123 / Add push notification opt-in
 branch:  fix/push-notification-opt-in-issue-ABC-123
-base:    origin/main
+base:    origin/main @ 4a7c19e   (fetch 済み。この SHA で作る)
 model:   claude-opus-5[1m]   (実装と設計判断を伴うため)
 グループ: v2
 タブ名 / セッション名:  v2:ABC-123   (agent 名: v2-abc-123)
@@ -191,13 +211,18 @@ Linear:  Backlog → In Progress   (現 status は issue 取得時の実測値)
 **5-1. worktree + workspace を作る**
 
 ```sh
+main_repo=$(dirname "$(git rev-parse --git-common-dir)")
 herdr worktree create \
-  --cwd "$(git rev-parse --show-toplevel)" \
+  --cwd "$main_repo" \
   --branch <branch> \
-  --base <base> \
+  --base "$base_sha" \
   --label <ISSUE-ID> \
-  --no-focus --json
+  --no-focus
 ```
+
+`--cwd` は main working dir でなければならない (`--show-toplevel` を使うと親がリンク worktree のとき `linked_worktree_source` で落ちる。理由は「対象 workspace の求め方」)。
+
+`--base` にはブランチ名ではなく Step 3 の `base_sha` を渡す。ブランチ名だと承認後に `origin/<default>` が進んだ場合、承認ブロックで見せた SHA と違う土台で作られる。`--base` は commit SHA をそのまま解決する。
 
 `--no-focus` は親の視界を奪わないため。起動直後に画面が飛ぶと、次の issue を仕込む作業が中断される。作られた workspace はサイドバーで親リポの下にグループ表示され、配置は `~/.herdr/worktrees/<repo>/<branch-slug>` になる。
 
@@ -472,8 +497,9 @@ herdr agent prompt <agent-name-or-pane-id> "<回答>"
 issue ID で言われることが多いので、タブ label から workspace を引く:
 
 ```sh
-herdr worktree list --cwd "$(git rev-parse --show-toplevel)"  # 自リポの worktree と workspace_id
-herdr tab list                                                # label (issue ID) から workspace_id を照合
+main_repo=$(dirname "$(git rev-parse --git-common-dir)")
+herdr worktree list --cwd "$main_repo"  # 自リポの worktree と workspace_id
+herdr tab list                          # label (issue ID) から workspace_id を照合
 ```
 
 引いた workspace が「スコープ」の集合に無ければ、そこで止めて別リポである旨を伝える。
