@@ -33,11 +33,15 @@ herdr は 1 画面に複数リポジトリを同居させ、`herdr agent list` �
 ### 対象 workspace の求め方
 
 ```sh
-repo_root=$(git rev-parse --show-toplevel)
-herdr worktree list --cwd "$repo_root" --json
+main_repo=$(dirname "$(git rev-parse --git-common-dir)")
+herdr worktree list --cwd "$main_repo"
 ```
 
 `--cwd` を渡すと、そのリポジトリの worktree だけが返る (渡さないと**フォーカス中の workspace のリポジトリ**が対象になり、親がどの pane に居るかで結果が変わる。必ず明示する)。
+
+**`--cwd` に渡す値は `git rev-parse --show-toplevel` では求めない。** 親自身がリンク worktree で動いていると、`--show-toplevel` は main working dir ではなく worktree 自身のパスを返す。それを渡した `herdr worktree create` は必ず `linked_worktree_source` エラーで落ちる ("New and open worktree actions start from the repo parent workspace.")。`worktree list` の方はどちらのパスでも通ってしまうため、list で動いた式をそのまま create に流用して踏んだ。**`--cwd` を取る herdr のコマンドは、このスキル内では全部 `$main_repo` を使う。**
+
+親がリンク worktree で動くのは例外ではない。worktree を切って作業しているセッションからさらに子を起こすのが、このスキルの主な使われ方。
 
 返る各 worktree の `open_workspace_id` が対象の workspace ID。このフィールドが無いものは herdr で開いていない worktree (`wt` などで作ったもの) なので、対象外として扱う。
 
@@ -47,7 +51,7 @@ herdr worktree list --cwd "$repo_root" --json
 
 - **巡回モード** — `herdr agent list` の結果を `workspace_id` が上の集合に入るものだけに絞る。範囲外の agent は状態も報告しない (「別リポで 3 つ動いています」も余計な情報)
 - **停止モード** — 対象が範囲外なら実行せず、「別リポジトリ (`<repo_name>`) の workspace なので、そちらのセッションから操作してください」と伝えて止まる
-- **起動モード** — `herdr worktree create --cwd "$(git rev-parse --show-toplevel)"` が自リポに閉じるので追加の絞りは不要
+- **起動モード** — `herdr worktree create --cwd "$main_repo"` が自リポに閉じるので追加の絞りは不要
 
 ユーザーが明示的に別リポの workspace ID を指定してきた場合だけは例外だが、そのときも「別リポですが本当に操作しますか」と 1 問確認する。issue ID の取り違えで隣のプロジェクトを消すのが一番ありがちな事故。
 
@@ -191,13 +195,16 @@ Linear:  Backlog → In Progress   (現 status は issue 取得時の実測値)
 **5-1. worktree + workspace を作る**
 
 ```sh
+main_repo=$(dirname "$(git rev-parse --git-common-dir)")
 herdr worktree create \
-  --cwd "$(git rev-parse --show-toplevel)" \
+  --cwd "$main_repo" \
   --branch <branch> \
   --base <base> \
   --label <ISSUE-ID> \
-  --no-focus --json
+  --no-focus
 ```
+
+`--cwd` は main working dir でなければならない (`--show-toplevel` を使うと親がリンク worktree のとき `linked_worktree_source` で落ちる。理由は「対象 workspace の求め方」)。
 
 `--no-focus` は親の視界を奪わないため。起動直後に画面が飛ぶと、次の issue を仕込む作業が中断される。作られた workspace はサイドバーで親リポの下にグループ表示され、配置は `~/.herdr/worktrees/<repo>/<branch-slug>` になる。
 
@@ -472,8 +479,9 @@ herdr agent prompt <agent-name-or-pane-id> "<回答>"
 issue ID で言われることが多いので、タブ label から workspace を引く:
 
 ```sh
-herdr worktree list --cwd "$(git rev-parse --show-toplevel)"  # 自リポの worktree と workspace_id
-herdr tab list                                                # label (issue ID) から workspace_id を照合
+main_repo=$(dirname "$(git rev-parse --git-common-dir)")
+herdr worktree list --cwd "$main_repo"  # 自リポの worktree と workspace_id
+herdr tab list                          # label (issue ID) から workspace_id を照合
 ```
 
 引いた workspace が「スコープ」の集合に無ければ、そこで止めて別リポである旨を伝える。
