@@ -109,7 +109,9 @@ child モードでも **worktree は作らない**。同じ作業の続きなの
 - 書き終えたら、保存先の絶対パスだけを返信してください
 ```
 
-`SendMessage` で送ったなら、保存先は子の返信でそのまま返る。`herdr agent prompt` に切り替えた場合は「絶対パスだけを最後の行に出力してください」と書き換えたうえで、端末から拾う:
+`SendMessage` で送ったなら、保存先は子の返信でそのまま返る。**送信直後に「返って来ない」と判定しない** — 子は policy を読んで文書を書くので数分かかる。`herdr agent get` の `agent_status` が `working` の間は待ち、`idle` に戻っても返信が無ければ端末を読む (Step 6 と同じ基準)。
+
+`herdr agent prompt` に切り替えた場合は「絶対パスだけを最後の行に出力してください」と書き換えたうえで、端末から拾う:
 
 ```sh
 herdr agent read <child-agent> --source recent-unwrapped --lines 40
@@ -213,12 +215,16 @@ herdr agent prompt <agent-name> "/rename <label>"
 タイトルが変わるのを待って確認する:
 
 ```sh
+renamed=0
 for i in $(seq 1 15); do
   t=$(herdr agent get <agent-name> | jq -r '.result.agent.terminal_title_stripped')
-  [ "$t" = "<label>" ] && break
+  if [ "$t" = "<label>" ]; then renamed=1; break; fi
   sleep 1
 done
+[ "$renamed" = 1 ] || { echo "rename not confirmed" >&2; exit 1; }
 ```
+
+**一致しないまま 5-2 に進まない。** フラグを見ずに `break` だけで書くと、15 回とも一致しなくてもループは正常終了し、そのまま本文を撃って上の連結を踏む。
 
 入力欄が汚れてしまったら、送り直す前に消す:
 
@@ -344,5 +350,5 @@ self モードでは自分を落とさない。Step 7 まで終えたことを�
 - 投入したのに `Ctx: 0` のまま何も起きない → 入力欄に複数の投入が連結して残っている (5-1 の完了確認を飛ばした場合)。`herdr agent send-keys <name> esc` で消し、タイトル確認を挟んで送り直す。`agent prompt` は成功を返し `agent_status` も `idle` なので、送信結果からは気づけない
 - `@{u}` でエラー → upstream 未設定。`origin/<default-branch>...HEAD` に替える。0 と書かない
 - 子がパスを返さない (child, Step 1) → 子が `blocked` の可能性がある。`herdr agent read` で止まっている理由を見てから、文書執筆を再依頼する
-- `SendMessage` が `is not an agent in this conversation` で落ちた → `[ref]` が要る。エラーに候補と ref が出るので、それをそのまま宛名にして送り直す
+- `SendMessage` が `is not an agent in this conversation` で落ちた → `[ref]` が要る。ただし**エラーに出た候補をそのまま宛名にしない** — 別リポジトリの同名セッションが提示されうる。「宛先を確定する」の 2 段をやり直し、`interactive` の完全一致が 1 行のときだけ、その行の `[ref]` で送り直す
 - `SendMessage` が `reply-only` で落ちた → 相手は古いバイナリで起動されていて名前では届かない。`herdr agent prompt` に切り替える (相手を起動し直すまで直らない)

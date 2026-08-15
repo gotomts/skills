@@ -136,12 +136,14 @@ herdr は用途ごとに別の名前空間を使うので、1 つの issue に�
 | 用途 | 例 (グループなし) | 例 (グループ `v2`) | 制約 |
 |---|---|---|---|
 | ブランチ名 | `fix/flaky-login-redirect-issue-ABC-123` | 同左 | git の制約のみ |
-| タブ label | `ABC-123` | `v2:ABC-123` | 自由 (大文字可) |
+| タブ label | `ABC-123` | `v2:ABC-123` | 大文字可。**`[A-Za-z0-9_:-]` に限る** |
 | agent 名 | `abc-123` | `v2-abc-123` | **小文字始まり、`[a-z0-9_-]` のみ、1〜32 文字** |
 
 グループ分けをするリポジトリかどうかは「同一リポ内をグループで分ける」の手順で決める。ブランチ名には prefix を入れない — グループは herdr 上の見え方の話で、git 側の履歴に持ち込む理由がない。
 
 agent 名の制約は実際にエラーで弾かれる (`invalid_agent_name`)。issue ID をそのまま渡さず小文字化する。
+
+**タブ label の文字集合はこちらで守る。herdr は弾いてくれない。** label は 5-5 で `"/rename <tab-label>"` として二重引用符の中に入るので、バッククォートや `$(...)` が混じるとコマンド置換として評価される (同じ罠を herdr-succession が本文について文書化している)。空白は語分割を起こす。短縮キーはユーザーの発話や Linear project 名から作るため、記号が混じりうる。範囲外の文字が入る場合は落として作り直す。
 
 **ブランチ命名規約** — 対象リポジトリの既存ブランチに合わせる。`git branch --list` で数本見れば規約が読める。読めない場合の既定は:
 
@@ -293,12 +295,16 @@ herdr agent prompt <agent-name> "/rename <tab-label>"
 **タイトルが変わるのを確認してから 5-6 に進む。確認を飛ばさない。** `agent prompt` を連続で撃つと、1 通目が送信される前に 2 通目が入力欄へ届き、**2 つが連結したまま未送信で残る**。`agent prompt` は成功を返し `agent_status` も `idle` なので、送信結果からは気づけない。issue 本文ごと未送信で残り、起動したつもりの子が何もしていない状態になる。
 
 ```sh
+renamed=0
 for i in $(seq 1 15); do
   t=$(herdr agent get <agent-name> | jq -r '.result.agent.terminal_title_stripped')
-  [ "$t" = "<tab-label>" ] && break
+  if [ "$t" = "<tab-label>" ]; then renamed=1; break; fi
   sleep 1
 done
+[ "$renamed" = 1 ] || { echo "rename not confirmed" >&2; exit 1; }
 ```
+
+**一致しないまま 5-6 に進まない。** フラグを見ずに `break` だけで書くと、15 回とも一致しなくてもループは正常終了する。そのまま初回プロンプトを撃つと、まさにここで警告した連結が起きる。一致しなかった場合は 5-6 を実行せず、`herdr agent read` で pane の状態を見る。
 
 入力欄が汚れたら `herdr agent send-keys <agent-name> esc` で消してから送り直す。
 
@@ -401,7 +407,7 @@ herdr agent list
 **宛先はこの 2 段で確定する。名前だけで送らない。**
 
 1. Step 1 で絞った集合のうち、**このスキルが起動した子だけ**を残す。`herdr agent list` の `name` が起動モード Step 2 の表の agent 名と一致し、かつ `terminal_title_stripped` がタブ label と一致するもの (グループを付けないリポジトリなら prefix 無しの形で一致する)。どちらか欠けるのは手動で立てたタブなので、端末を読む方に回す
-2. `ListAgents` を引き、その名前に**完全一致する `interactive` の行がちょうど 1 行**であることを確認する。次のどれかなら端末を読む方に切り替える (`pane_id` 指定なら一意に効く)
+2. `ListAgents` を引き、**`terminal_title_stripped` の値に完全一致する `interactive` の行がちょうど 1 行**であることを確認する。照合の鍵はこの値 (= タブ label = `/rename` で付けた名前) で、**herdr の agent 名 (小文字) は鍵にしない** — 起動モード Step 2 の表の通り、両者は設計上必ず食い違う。次のどれかなら端末を読む方に切り替える (`pane_id` 指定なら一意に効く)
    - **一致が 0 行** — その名前では登録されていない (`/rename` が未反映 / 表示名が違う)
    - **一致するのが `Remote Control` の行だけ** — 子が古いバイナリで起動されている。ローカル配送は unix socket 経由で、対応していないプロセスには届かない。reply-only なので名前では送れない
    - **2 行以上** — 別リポジトリか過去セッションと名前が衝突している
@@ -410,8 +416,8 @@ herdr agent list
 
 確定したら行末の `[ref]` を読んで送る。
 
-```
-SendMessage  to: "<セッション名> [<ref>]"
+```text
+SendMessage  to: "<terminal_title_stripped> [<ref>]"
 ```
 
 別セッション宛の初回送信は `[ref]` が要る (誤爆防止の確認)。`ref` は不透明値なので issue ID から組み立てず、必ず `ListAgents` の出力から読む。
@@ -437,7 +443,7 @@ SendMessage  to: "<セッション名> [<ref>]"
 
 - 対象が `blocked` (上記)
 - 宛先確定の 2 段を通らなかった — 手動タブ / 一致が 0 行 / 一致が `Remote Control` のみ / 2 行以上
-- **そのラウンドの他の対象を処理し終えても返答が無い** (automode の「次の周回まで待つ」にしない。単発の `patrol` では次の周回が来ない)
+- **そのラウンドの他の対象を処理し終えても返答が無い** (automode の「次の周回まで待つ」にしない。単発の `patrol` では次の周回が来ない)。送信直後に判定しない — `SendMessage` は返信を待たずに戻るので、`herdr agent get` の `agent_status` が `working` の間は配送前か処理中とみなして待つ
 - 返ってきた自己申告が要領を得ない
 
 ```sh
@@ -653,5 +659,5 @@ git -C <repo-root> worktree prune
 - `agent start` がタイムアウト → pane はできている。`herdr agent explain` で検出状態を見せ、手動で claude を起動する選択肢を出す
 - 起動したのに子が何もしていない (`Ctx: 0` のまま) → 5-5 の確認を飛ばして 5-6 を撃ち、入力欄で 2 通が連結して未送信で残っている。`herdr agent send-keys <name> esc` で消し、タイトル確認を挟んで送り直す
 - `gh` / `linear` が無い → 起動モードは成立しない。issue 内容を直接ユーザーから受け取る形に切り替えてよいか 1 問で確認する
-- `SendMessage` が `is not an agent in this conversation` で落ちた → `[ref]` が要る。エラーに候補と ref が出るので、それをそのまま宛名にして送り直す
+- `SendMessage` が `is not an agent in this conversation` で落ちた → `[ref]` が要る。ただし**エラーに出た候補をそのまま宛名にしない** — 別リポジトリの同名セッションが提示されうる。`herdr agent list` を自リポの workspace に絞って再照合し、`interactive` の完全一致が 1 行のときだけ、その行の `[ref]` で送り直す。この再取得は「同じラウンド内で引き直さない」の例外
 - `SendMessage` が `reply-only` で落ちた → その子は古いバイナリで起動されていて名前では届かない。`herdr agent read` に切り替える (子を起動し直すまで直らない)
