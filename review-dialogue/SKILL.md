@@ -144,11 +144,13 @@ gh api graphql -f query='query{repository(owner:"O",name:"R"){pullRequest(number
 crit --no-open <file>          # run_in_background: true で起動する
 ```
 
-URL は起動直後の出力に出る。**その 1 行をそのままユーザーに伝える。**
+URL は起動直後の 1 行目に出る。**その URL をそのままユーザーに伝え、「インラインコメントを付けたら Finish Review を押してください」と添える。**
 
 ```text
-Crit is open at http://localhost:<port>. Leave inline comments, then click Finish Review.
+Started crit daemon at http://localhost:58820 (session cf5e954dac97, PID 48597)
 ```
+
+**この行の文言は crit のバージョンで変わる。** 文字列を決め打ちで待たずに、出力から `http://localhost:<port>` を拾う。
 
 `--no-open` を付けるのは、ユーザーの手元でブラウザを勝手に開かせないため。開きたいかは URL を見た本人が決める。
 
@@ -190,7 +192,9 @@ subprocess.run(
 
 ## Phase 8: 未決分のコメントを再アンカーする
 
-md を書き直すと、crit のコメントが元の行に取り残される（`drifted: true` が付く）。レビュアーから「本来の位置に移動してほしい」と言われる。
+md を書き直すと、crit のコメントが元の行に取り残される。レビュアーから「本来の位置に移動してほしい」と言われる。
+
+**ずれの印は `review.json` を見る。** ブラウザ側がラウンドを進めたときに `drifted: true` が立つ。`crit comments --json --all` の出力にはこのフィールドが入らないので、CLI の一覧では気づけない。
 
 **`crit` に移動コマンドはない。レビューファイルを直接書き換える。**
 
