@@ -218,8 +218,11 @@ cp <review_file> <review_file>.bak    # 必ず先にバックアップ
 
 ```sh
 gh api graphql -f query='query{repository(owner:"O",name:"R"){pullRequest(number:N){
-  reviewThreads(first:100){nodes{id line comments(first:1){nodes{databaseId body}}}}}}}'
+  reviewThreads(first:100){nodes{id line
+    comments(first:1){nodes{databaseId author{login __typename} body}}}}}}}'
 ```
+
+**ここでも Phase 1 と同じく `__typename == Bot` を落とす。** 落とさないと bot のスレッドに返信を投げることになり、9-5 の「未返信 0 件」の分母も狂う。**Phase 1 と 9-1 と 9-5 で母集合を揃える。**
 
 ### 9-2. 返信本文を JSON に用意し、投稿前にユーザーへ全文を見せて承認を取る
 
@@ -251,7 +254,7 @@ if bad:
 ```python
 import json, pathlib, subprocess, time
 
-posted_file = pathlib.Path("posted.json")
+posted_file = pathlib.Path("<スクラッチパッド>/posted.json")
 posted = json.loads(posted_file.read_text()) if posted_file.exists() else {}
 
 q = ('mutation($t:ID!,$b:String!){addPullRequestReviewThreadReply'
